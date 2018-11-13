@@ -1,0 +1,879 @@
+L 1 "..\..\RTX\src\rt_List.c"
+N/*----------------------------------------------------------------------------
+N *      RL-ARM - RTX
+N *----------------------------------------------------------------------------
+N *      Name:    RT_LIST.C
+N *      Purpose: Functions for the management of different lists
+N *      Rev.:    V4.70
+N *----------------------------------------------------------------------------
+N *      This code is part of the RealView Run-Time Library.
+N *      Copyright (c) 2004-2013 KEIL - An ARM Company. All rights reserved.
+N *---------------------------------------------------------------------------*/
+N
+N#include "rt_TypeDef.h"
+L 1 "..\..\RTX\inc\rt_TypeDef.h" 1
+N/*----------------------------------------------------------------------------
+N *      RL-ARM - RTX
+N *----------------------------------------------------------------------------
+N *      Name:    RT_TYPEDEF.H
+N *      Purpose: Type Definitions
+N *      Rev.:    V4.73
+N *----------------------------------------------------------------------------
+N *      This code is part of the RealView Run-Time Library.
+N *      Copyright (c) 2004-2013 KEIL - An ARM Company. All rights reserved.
+N *---------------------------------------------------------------------------*/
+N
+N/* Types */
+Ntypedef signed char        S8;
+Ntypedef unsigned char      U8;
+Ntypedef short              S16;
+Ntypedef unsigned short     U16;
+Ntypedef int                S32;
+Ntypedef unsigned int       U32;
+Ntypedef long long          S64;
+Ntypedef unsigned long long U64;
+Ntypedef unsigned char      BIT;
+Ntypedef unsigned int       BOOL;
+Ntypedef void               (*FUNCP)(void);
+N
+Ntypedef U32     OS_TID;
+Ntypedef void    *OS_ID;
+Ntypedef U32     OS_RESULT;
+N
+Ntypedef struct OS_TCB {
+N  /* General part: identical for all implementations.                        */
+N  U8     cb_type;                 /* Control Block Type                      */
+N  U8     state;                   /* Task state                              */
+N  U8     prio;                    /* Execution priority                      */
+N  U8     task_id;                 /* Task ID value for optimized TCB access  */
+N  struct OS_TCB *p_lnk;           /* Link pointer for ready/sem. wait list   */
+N  struct OS_TCB *p_rlnk;          /* Link pointer for sem./mbx lst backwards */
+N  struct OS_TCB *p_dlnk;          /* Link pointer for delay list             */
+N  struct OS_TCB *p_blnk;          /* Link pointer for delay list backwards   */
+N  U16    delta_time;              /* Time until time out                     */
+N  U16    interval_time;           /* Time interval for periodic waits        */
+N  U16    events;                  /* Event flags                             */
+N  U16    waits;                   /* Wait flags                              */
+N  void   **msg;                   /* Direct message passing when task waits  */
+N  struct OS_MUCB *p_mlnk;         /* Link pointer for mutex owner list       */
+N  U8     prio_base;               /* Base priority                           */
+N  U8     ret_val;                 /* Return value upon completion of a wait  */
+N
+N  /* Hardware dependant part: specific for CM processor                      */
+N  U8     ret_upd;                 /* Updated return value                    */
+N  U16    priv_stack;              /* Private stack size, 0= system assigned  */
+N  U32    tsk_stack;               /* Current task Stack pointer (R13)        */
+N  U32    *stack;                  /* Pointer to Task Stack memory block      */
+N
+N  /* Task entry point used for uVision debugger                              */
+N  FUNCP  ptask;                   /* Task entry address                      */
+N} *P_TCB;
+N#define TCB_RETVAL      37        /* 'ret_val' offset                        */
+N#define TCB_RETUPD      38        /* 'ret_upd' offset                        */
+N#define TCB_TSTACK      44        /* 'tsk_stack' offset                      */
+N
+Ntypedef struct OS_PSFE {          /* Post Service Fifo Entry                 */
+N  void  *id;                      /* Object Identification                   */
+N  U32    arg;                     /* Object Argument                         */
+N} *P_PSFE;
+N
+Ntypedef struct OS_PSQ {           /* Post Service Queue                      */
+N  U8     first;                   /* FIFO Head Index                         */
+N  U8     last;                    /* FIFO Tail Index                         */
+N  U8     count;                   /* Number of stored items in FIFO          */
+N  U8     size;                    /* FIFO Size                               */
+N  struct OS_PSFE q[1];            /* FIFO Content                            */
+N} *P_PSQ;
+N
+Ntypedef struct OS_TSK {
+N  P_TCB  run;                     /* Current running task                    */
+N  P_TCB  new;                     /* Scheduled task to run                   */
+N} *P_TSK;
+N
+Ntypedef struct OS_ROBIN {         /* Round Robin Control                     */
+N  P_TCB  task;                    /* Round Robin task                        */
+N  U16    time;                    /* Round Robin switch time                 */
+N  U16    tout;                    /* Round Robin timeout                     */
+N} *P_ROBIN;
+N
+Ntypedef struct OS_XCB {
+N  U8     cb_type;                 /* Control Block Type                      */
+N  struct OS_TCB *p_lnk;           /* Link pointer for ready/sem. wait list   */
+N  struct OS_TCB *p_rlnk;          /* Link pointer for sem./mbx lst backwards */
+N  struct OS_TCB *p_dlnk;          /* Link pointer for delay list             */
+N  struct OS_TCB *p_blnk;          /* Link pointer for delay list backwards   */
+N  U16    delta_time;              /* Time until time out                     */
+N} *P_XCB;
+N
+Ntypedef struct OS_MCB {
+N  U8     cb_type;                 /* Control Block Type                      */
+N  U8     isr_st;                  /* State flag variable for isr functions   */
+N  struct OS_TCB *p_lnk;           /* Chain of tasks waiting for message      */
+N  U16    first;                   /* Index of the message list begin         */
+N  U16    last;                    /* Index of the message list end           */
+N  U16    count;                   /* Actual number of stored messages        */
+N  U16    size;                    /* Maximum number of stored messages       */
+N  void   *msg[1];                 /* FIFO for Message pointers 1st element   */
+N} *P_MCB;
+N
+Ntypedef struct OS_SCB {
+N  U8     cb_type;                 /* Control Block Type                      */
+N  U16    tokens;                  /* Semaphore tokens                        */
+N  struct OS_TCB *p_lnk;           /* Chain of tasks waiting for tokens       */
+N} *P_SCB;
+N
+Ntypedef struct OS_MUCB {
+N  U8     cb_type;                 /* Control Block Type                      */
+N  U16    level;                   /* Call nesting level                      */
+N  struct OS_TCB *p_lnk;           /* Chain of tasks waiting for mutex        */
+N  struct OS_TCB *owner;           /* Mutex owner task                        */
+N  struct OS_MUCB *p_mlnk;         /* Chain of mutexes by owner task          */
+N} *P_MUCB;
+N
+Ntypedef struct OS_XTMR {
+N  struct OS_TMR  *next;
+N  U16    tcnt;
+N} *P_XTMR;
+N
+Ntypedef struct OS_TMR {
+N  struct OS_TMR  *next;           /* Link pointer to Next timer              */
+N  U16    tcnt;                    /* Timer delay count                       */
+N  U16    info;                    /* User defined call info                  */
+N} *P_TMR;
+N
+Ntypedef struct OS_BM {
+N  void *free;                     /* Pointer to first free memory block      */
+N  void *end;                      /* Pointer to memory block end             */
+N  U32  blk_size;                  /* Memory block size                       */
+N} *P_BM;
+N
+N/* Definitions */
+N#define __TRUE          1
+N#define __FALSE         0
+N#define NULL            ((void *) 0)
+N
+N/*----------------------------------------------------------------------------
+N * end of file
+N *---------------------------------------------------------------------------*/
+N
+L 13 "..\..\RTX\src\rt_List.c" 2
+N#include "RTX_Config.h"
+L 1 "..\..\RTX\inc\RTX_Config.h" 1
+N/*----------------------------------------------------------------------------
+N *      RL-ARM - RTX
+N *----------------------------------------------------------------------------
+N *      Name:    RTX_CONFIG.H
+N *      Purpose: Exported functions of RTX_Config.c
+N *      Rev.:    V4.70
+N *----------------------------------------------------------------------------
+N *      This code is part of the RealView Run-Time Library.
+N *      Copyright (c) 2004-2013 KEIL - An ARM Company. All rights reserved.
+N *---------------------------------------------------------------------------*/
+N
+N
+N/* Error Codes */
+N#define OS_ERR_STK_OVF          1
+N#define OS_ERR_FIFO_OVF         2
+N#define OS_ERR_MBX_OVF          3
+N
+N/* Definitions */
+N#define BOX_ALIGN_8                   0x80000000
+N#define _declare_box(pool,size,cnt)   U32 pool[(((size)+3)/4)*(cnt) + 3]
+N#define _declare_box8(pool,size,cnt)  U64 pool[(((size)+7)/8)*(cnt) + 2]
+N#define _init_box8(pool,size,bsize)   _init_box (pool,size,(bsize) | BOX_ALIGN_8)
+N
+N/* Variables */
+Nextern U32 mp_tcb[];
+Nextern U64 mp_stk[];
+Nextern U32 os_fifo[];
+Nextern void *os_active_TCB[];
+N
+N/* Constants */
+Nextern U16 const os_maxtaskrun;
+Nextern U32 const os_trv;
+Nextern U8  const os_flags;
+Nextern U32 const os_stackinfo;
+Nextern U32 const os_rrobin;
+Nextern U32 const os_clockrate;
+Nextern U32 const os_timernum;
+Nextern U16 const mp_tcb_size;
+Nextern U32 const mp_stk_size;
+Nextern U32 const *m_tmr;
+Nextern U16 const mp_tmr_size;
+Nextern U8  const os_fifo_size;
+N
+N/* Functions */
+Nextern void os_idle_demon   (void);
+Nextern int  os_tick_init    (void);
+Nextern void os_tick_irqack  (void);
+Nextern void os_tmr_call     (U16  info);
+Nextern void os_error        (U32 err_code);
+N
+N/*----------------------------------------------------------------------------
+N * end of file
+N *---------------------------------------------------------------------------*/
+L 14 "..\..\RTX\src\rt_List.c" 2
+N#include "rt_System.h"
+L 1 "..\..\RTX\inc\rt_System.h" 1
+N/*----------------------------------------------------------------------------
+N *      RL-ARM - RTX
+N *----------------------------------------------------------------------------
+N *      Name:    RT_SYSTEM.H
+N *      Purpose: System Task Manager definitions
+N *      Rev.:    V4.70
+N *----------------------------------------------------------------------------
+N *      This code is part of the RealView Run-Time Library.
+N *      Copyright (c) 2004-2013 KEIL - An ARM Company. All rights reserved.
+N *---------------------------------------------------------------------------*/
+N
+N/* Variables */
+N#define os_psq  ((P_PSQ)&os_fifo)
+Nextern int os_tick_irqn;
+N
+N/* Functions */
+Nextern U32  rt_suspend    (void);
+Nextern void rt_resume     (U32 sleep_time);
+Nextern void rt_tsk_lock   (void);
+Nextern void rt_tsk_unlock (void);
+Nextern void rt_psh_req    (void);
+Nextern void rt_pop_req    (void);
+Nextern void rt_systick    (void);
+Nextern void rt_stk_check  (void);
+N
+N/*----------------------------------------------------------------------------
+N * end of file
+N *---------------------------------------------------------------------------*/
+N
+L 15 "..\..\RTX\src\rt_List.c" 2
+N#include "rt_List.h"
+L 1 "..\..\RTX\inc\rt_List.h" 1
+N/*----------------------------------------------------------------------------
+N *      RL-ARM - RTX
+N *----------------------------------------------------------------------------
+N *      Name:    RT_LIST.H
+N *      Purpose: Functions for the management of different lists
+N *      Rev.:    V4.70
+N *----------------------------------------------------------------------------
+N *      This code is part of the RealView Run-Time Library.
+N *      Copyright (c) 2004-2013 KEIL - An ARM Company. All rights reserved.
+N *---------------------------------------------------------------------------*/
+N
+N/* Definitions */
+N
+N/* Values for 'cb_type' */
+N#define TCB             0
+N#define MCB             1
+N#define SCB             2
+N#define MUCB            3
+N#define HCB             4
+N
+N/* Variables */
+Nextern struct OS_XCB os_rdy;
+Nextern struct OS_XCB os_dly;
+N
+N/* Functions */
+Nextern void  rt_put_prio      (P_XCB p_CB, P_TCB p_task);
+Nextern P_TCB rt_get_first     (P_XCB p_CB);
+Nextern void  rt_put_rdy_first (P_TCB p_task);
+Nextern P_TCB rt_get_same_rdy_prio (void);
+Nextern void  rt_resort_prio   (P_TCB p_task);
+Nextern void  rt_put_dly       (P_TCB p_task, U16 delay);
+Nextern void  rt_dec_dly       (void);
+Nextern void  rt_rmv_list      (P_TCB p_task);
+Nextern void  rt_rmv_dly       (P_TCB p_task);
+Nextern void  rt_psq_enq       (OS_ID entry, U32 arg);
+N
+N/* This is a fast macro generating in-line code */
+N#define rt_rdy_prio(void) (os_rdy.p_lnk->prio)
+N
+N
+N/*----------------------------------------------------------------------------
+N * end of file
+N *---------------------------------------------------------------------------*/
+N
+L 16 "..\..\RTX\src\rt_List.c" 2
+N#include "rt_Task.h"
+L 1 "..\..\RTX\inc\rt_Task.h" 1
+N/*----------------------------------------------------------------------------
+N *      RL-ARM - RTX
+N *----------------------------------------------------------------------------
+N *      Name:    RT_TASK.H
+N *      Purpose: Task functions and system start up.
+N *      Rev.:    V4.70
+N *----------------------------------------------------------------------------
+N *      This code is part of the RealView Run-Time Library.
+N *      Copyright (c) 2004-2013 KEIL - An ARM Company. All rights reserved.
+N *---------------------------------------------------------------------------*/
+N
+N/* Definitions */
+N
+N/* Values for 'state'   */
+N#define INACTIVE        0
+N#define READY           1
+N#define RUNNING         2
+N#define WAIT_DLY        3
+N#define WAIT_ITV        4
+N#define WAIT_OR         5
+N#define WAIT_AND        6
+N#define WAIT_SEM        7
+N#define WAIT_MBX        8
+N#define WAIT_MUT        9
+N
+N/* Return codes */
+N#define OS_R_TMO        0x01
+N#define OS_R_EVT        0x02
+N#define OS_R_SEM        0x03
+N#define OS_R_MBX        0x04
+N#define OS_R_MUT        0x05
+N
+N#define OS_R_OK         0x00
+N#define OS_R_NOK        0xff
+N
+N/* Variables */
+Nextern struct OS_TSK os_tsk;
+Nextern struct OS_TCB os_idle_TCB;
+N
+N/* Functions */
+Nextern void      rt_switch_req (P_TCB p_new);
+Nextern void      rt_dispatch   (P_TCB next_TCB);
+Nextern void      rt_block      (U16 timeout, U8 block_state);
+Nextern void      rt_tsk_pass   (void);
+Nextern OS_TID    rt_tsk_self   (void);
+Nextern OS_RESULT rt_tsk_prio   (OS_TID task_id, U8 new_prio);
+Nextern OS_TID    rt_tsk_create (FUNCP task, U32 prio_stksz, void *stk, void *argv);
+Nextern OS_RESULT rt_tsk_delete (OS_TID task_id);
+Nextern void      rt_sys_init   (FUNCP first_task, U32 prio_stksz, void *stk);
+N
+N/*----------------------------------------------------------------------------
+N * end of file
+N *---------------------------------------------------------------------------*/
+N
+N
+N
+N
+N
+N
+L 17 "..\..\RTX\src\rt_List.c" 2
+N#include "rt_Time.h"
+L 1 "..\..\RTX\inc\rt_Time.h" 1
+N/*----------------------------------------------------------------------------
+N *      RL-ARM - RTX
+N *----------------------------------------------------------------------------
+N *      Name:    RT_TIME.H
+N *      Purpose: Delay and interval wait functions definitions
+N *      Rev.:    V4.70
+N *----------------------------------------------------------------------------
+N *      This code is part of the RealView Run-Time Library.
+N *      Copyright (c) 2004-2013 KEIL - An ARM Company. All rights reserved.
+N *---------------------------------------------------------------------------*/
+N
+N/* Variables */
+Nextern U32 os_time;
+N
+N/* Functions */
+Nextern U32  rt_time_get (void);
+Nextern void rt_dly_wait (U16 delay_time);
+Nextern void rt_itv_set  (U16 interval_time);
+Nextern void rt_itv_wait (void);
+N
+N/*----------------------------------------------------------------------------
+N * end of file
+N *---------------------------------------------------------------------------*/
+N
+L 18 "..\..\RTX\src\rt_List.c" 2
+N#include "rt_HAL_CM.h"
+L 1 "..\..\RTX\portable\rt_HAL_CM.h" 1
+N/*----------------------------------------------------------------------------
+N *      RL-ARM - RTX
+N *----------------------------------------------------------------------------
+N *      Name:    RT_HAL_CM.H
+N *      Purpose: Hardware Abstraction Layer for Cortex-M definitions
+N *      Rev.:    V4.70
+N *----------------------------------------------------------------------------
+N *      This code is part of the RealView Run-Time Library.
+N *      Copyright (c) 2004-2013 KEIL - An ARM Company. All rights reserved.
+N *---------------------------------------------------------------------------*/
+N
+N/* Definitions */
+N#define INITIAL_xPSR    0x01000000
+N#define DEMCR_TRCENA    0x01000000
+N#define ITM_ITMENA      0x00000001
+N#define MAGIC_WORD      0xE25A2EA5
+N
+N#if ((__TARGET_ARCH_7_M || __TARGET_ARCH_7E_M) && !NO_EXCLUSIVE_ACCESS)
+X#if ((__TARGET_ARCH_7_M || 1) && !NO_EXCLUSIVE_ACCESS)
+N #define __USE_EXCLUSIVE_ACCESS
+N#else
+S #undef  __USE_EXCLUSIVE_ACCESS
+N#endif
+N
+N/* NVIC registers */
+N#define NVIC_ST_CTRL    (*((volatile U32 *)0xE000E010))
+N#define NVIC_ST_RELOAD  (*((volatile U32 *)0xE000E014))
+N#define NVIC_ST_CURRENT (*((volatile U32 *)0xE000E018))
+N#define NVIC_ISER         ((volatile U32 *)0xE000E100)
+N#define NVIC_ICER         ((volatile U32 *)0xE000E180)
+N#if (__TARGET_ARCH_6S_M)
+S#define NVIC_IP           ((volatile U32 *)0xE000E400)
+N#else
+N#define NVIC_IP           ((volatile U8  *)0xE000E400)
+N#endif
+N#define NVIC_INT_CTRL   (*((volatile U32 *)0xE000ED04))
+N#define NVIC_AIR_CTRL   (*((volatile U32 *)0xE000ED0C))
+N#define NVIC_SYS_PRI2   (*((volatile U32 *)0xE000ED1C))
+N#define NVIC_SYS_PRI3   (*((volatile U32 *)0xE000ED20))
+N
+N#define OS_PEND_IRQ()   NVIC_INT_CTRL  = (1<<28)
+N#define OS_PENDING      ((NVIC_INT_CTRL >> 26) & (1<<2 | 1))
+N#define OS_UNPEND(fl)   NVIC_INT_CTRL  = (*fl = OS_PENDING) << 25
+N#define OS_PEND(fl,p)   NVIC_INT_CTRL  = (fl | p<<2) << 26
+N#define OS_LOCK()       NVIC_ST_CTRL   =  0x0005
+N#define OS_UNLOCK()     NVIC_ST_CTRL   =  0x0007
+N
+N#define OS_X_PENDING    ((NVIC_INT_CTRL >> 28) & 1)
+N#define OS_X_UNPEND(fl) NVIC_INT_CTRL  = (*fl = OS_X_PENDING) << 27
+N#define OS_X_PEND(fl,p) NVIC_INT_CTRL  = (fl | p) << 28
+N#if (__TARGET_ARCH_6S_M)
+S#define OS_X_INIT(n)    NVIC_IP[n>>2] |= 0xFF << (8*(n & 0x03)); \
+S                        NVIC_ISER[n>>5] = 1 << (n & 0x1F)
+X#define OS_X_INIT(n)    NVIC_IP[n>>2] |= 0xFF << (8*(n & 0x03));                         NVIC_ISER[n>>5] = 1 << (n & 0x1F)
+N#else
+N#define OS_X_INIT(n)    NVIC_IP[n] = 0xFF; \
+N                        NVIC_ISER[n>>5] = 1 << (n & 0x1F)
+X#define OS_X_INIT(n)    NVIC_IP[n] = 0xFF;                         NVIC_ISER[n>>5] = 1 << (n & 0x1F)
+N#endif
+N#define OS_X_LOCK(n)    NVIC_ICER[n>>5] = 1 << (n & 0x1F)
+N#define OS_X_UNLOCK(n)  NVIC_ISER[n>>5] = 1 << (n & 0x1F)
+N
+N/* Core Debug registers */
+N#define DEMCR           (*((volatile U32 *)0xE000EDFC))
+N
+N/* ITM registers */
+N#define ITM_CONTROL     (*((volatile U32 *)0xE0000E80))
+N#define ITM_ENABLE      (*((volatile U32 *)0xE0000E00))
+N#define ITM_PORT30_U32  (*((volatile U32 *)0xE0000078))
+N#define ITM_PORT31_U32  (*((volatile U32 *)0xE000007C))
+N#define ITM_PORT31_U16  (*((volatile U16 *)0xE000007C))
+N#define ITM_PORT31_U8   (*((volatile U8  *)0xE000007C))
+N
+N/* Variables */
+Nextern BIT dbg_msg;
+N
+N/* Functions */
+N#ifdef __USE_EXCLUSIVE_ACCESS
+N #define rt_inc(p)     while(__strex((__ldrex(p)+1),p))
+N #define rt_dec(p)     while(__strex((__ldrex(p)-1),p))
+N#else
+S #define rt_inc(p)     __disable_irq();(*p)++;__enable_irq();
+S #define rt_dec(p)     __disable_irq();(*p)--;__enable_irq();
+N#endif
+N
+N__inline U32 rt_inc_qi (U32 size, U8 *count, U8 *first) {
+N  U32 cnt,c2;
+N#ifdef __USE_EXCLUSIVE_ACCESS
+N  do {
+N    if ((cnt = __ldrex(count)) == size) {
+N      __clrex();
+N      return (cnt); }
+N  } while (__strex(cnt+1, count));
+N  do {
+N    c2 = (cnt = __ldrex(first)) + 1;
+N    if (c2 == size) c2 = 0;
+N  } while (__strex(c2, first));
+N#else
+S  __disable_irq();
+S  if ((cnt = *count) < size) {
+S    *count = cnt+1;
+S    c2 = (cnt = *first) + 1;
+S    if (c2 == size) c2 = 0;
+S    *first = c2; 
+S  }
+S  __enable_irq ();
+N#endif
+N  return (cnt);
+N}
+N
+N__inline void rt_systick_init (void) {
+N  NVIC_ST_RELOAD  = os_trv;
+X  (*((volatile U32 *)0xE000E014))  = os_trv;
+N  NVIC_ST_CURRENT = 0;
+X  (*((volatile U32 *)0xE000E018)) = 0;
+N  NVIC_ST_CTRL    = 0x0007;
+X  (*((volatile U32 *)0xE000E010))    = 0x0007;
+N  NVIC_SYS_PRI3  |= 0xFF000000;
+X  (*((volatile U32 *)0xE000ED20))  |= 0xFF000000;
+N}
+N
+N__inline void rt_svc_init (void) {
+N#if !(__TARGET_ARCH_6S_M)
+N  int sh,prigroup;
+N#endif
+N  NVIC_SYS_PRI3 |= 0x00FF0000;
+X  (*((volatile U32 *)0xE000ED20)) |= 0x00FF0000;
+N#if (__TARGET_ARCH_6S_M)
+S  NVIC_SYS_PRI2 |= (NVIC_SYS_PRI3<<(8+1)) & 0xFC000000;
+N#else
+N  sh       = 8 - __clz (~((NVIC_SYS_PRI3 << 8) & 0xFF000000));
+X  sh       = 8 - __clz (~(((*((volatile U32 *)0xE000ED20)) << 8) & 0xFF000000));
+N  prigroup = ((NVIC_AIR_CTRL >> 8) & 0x07);
+X  prigroup = (((*((volatile U32 *)0xE000ED0C)) >> 8) & 0x07);
+N  if (prigroup >= sh) {
+N    sh = prigroup + 1;
+N  }
+N  NVIC_SYS_PRI2 = ((0xFEFFFFFF << sh) & 0xFF000000) | (NVIC_SYS_PRI2 & 0x00FFFFFF);
+X  (*((volatile U32 *)0xE000ED1C)) = ((0xFEFFFFFF << sh) & 0xFF000000) | ((*((volatile U32 *)0xE000ED1C)) & 0x00FFFFFF);
+N#endif
+N}
+N
+Nextern void rt_init_stack (P_TCB p_TCB, FUNCP task_body);
+Nextern void rt_set_PSP (U32 stack);
+Nextern U32  rt_get_PSP (void);
+Nextern void os_set_env (void);
+Nextern void *_alloc_box (void *box_mem);
+Nextern int  _free_box (void *box_mem, void *box);
+N
+Nextern void dbg_init (void);
+Nextern void dbg_task_notify (P_TCB p_tcb, BOOL create);
+Nextern void dbg_task_switch (U32 task_id);
+N
+N#ifdef DBG_MSG
+S#define DBG_INIT() dbg_init()
+S#define DBG_TASK_NOTIFY(p_tcb,create) if (dbg_msg) dbg_task_notify(p_tcb,create)
+S#define DBG_TASK_SWITCH(task_id)      if (dbg_msg && (os_tsk.new!=os_tsk.run)) \
+S                                                   dbg_task_switch(task_id)
+X#define DBG_TASK_SWITCH(task_id)      if (dbg_msg && (os_tsk.new!=os_tsk.run))                                                    dbg_task_switch(task_id)
+N#else
+N#define DBG_INIT()
+N#define DBG_TASK_NOTIFY(p_tcb,create)
+N#define DBG_TASK_SWITCH(task_id)
+N#endif
+N
+N/*----------------------------------------------------------------------------
+N * end of file
+N *---------------------------------------------------------------------------*/
+N
+L 19 "..\..\RTX\src\rt_List.c" 2
+N
+N/*----------------------------------------------------------------------------
+N *      Global Variables
+N *---------------------------------------------------------------------------*/
+N
+N/* List head of chained ready tasks */
+Nstruct OS_XCB  os_rdy;
+N/* List head of chained delay tasks */
+Nstruct OS_XCB  os_dly;
+N
+N
+N/*----------------------------------------------------------------------------
+N *      Functions
+N *---------------------------------------------------------------------------*/
+N
+N
+N/*--------------------------- rt_put_prio -----------------------------------*/
+N
+Nvoid rt_put_prio (P_XCB p_CB, P_TCB p_task) {
+N  /* Put task identified with "p_task" into list ordered by priority.       */
+N  /* "p_CB" points to head of list; list has always an element at end with  */
+N  /* a priority less than "p_task->prio".                                   */
+N  P_TCB p_CB2;
+N  U32 prio;
+N  BOOL sem_mbx = __FALSE;
+X  BOOL sem_mbx = 0;
+N
+N  if (p_CB->cb_type == SCB || p_CB->cb_type == MCB || p_CB->cb_type == MUCB) {
+X  if (p_CB->cb_type == 2 || p_CB->cb_type == 1 || p_CB->cb_type == 3) {
+N    sem_mbx = __TRUE;
+X    sem_mbx = 1;
+N  }
+N  prio = p_task->prio;
+N  p_CB2 = p_CB->p_lnk;
+N  /* Search for an entry in the list */
+N  while (p_CB2 != NULL && prio <= p_CB2->prio) {
+X  while (p_CB2 != ((void *) 0) && prio <= p_CB2->prio) {
+N    p_CB = (P_XCB)p_CB2;
+N    p_CB2 = p_CB2->p_lnk;
+N  }
+N  /* Entry found, insert the task into the list */
+N  p_task->p_lnk = p_CB2;
+N  p_CB->p_lnk = p_task;
+N  if (sem_mbx) {
+N    if (p_CB2 != NULL) {
+X    if (p_CB2 != ((void *) 0)) {
+N      p_CB2->p_rlnk = p_task;
+N    }
+N    p_task->p_rlnk = (P_TCB)p_CB;
+N  }
+N  else {
+N    p_task->p_rlnk = NULL;
+X    p_task->p_rlnk = ((void *) 0);
+N  }
+N}
+N
+N
+N/*--------------------------- rt_get_first ----------------------------------*/
+N
+NP_TCB rt_get_first (P_XCB p_CB) {
+N  /* Get task at head of list: it is the task with highest priority. */
+N  /* "p_CB" points to head of list. */
+N  P_TCB p_first;
+N
+N  p_first = p_CB->p_lnk;
+N  p_CB->p_lnk = p_first->p_lnk;
+N  if (p_CB->cb_type == SCB || p_CB->cb_type == MCB || p_CB->cb_type == MUCB) {
+X  if (p_CB->cb_type == 2 || p_CB->cb_type == 1 || p_CB->cb_type == 3) {
+N    if (p_first->p_lnk != NULL) {
+X    if (p_first->p_lnk != ((void *) 0)) {
+N      p_first->p_lnk->p_rlnk = (P_TCB)p_CB;
+N      p_first->p_lnk = NULL;
+X      p_first->p_lnk = ((void *) 0);
+N    }
+N    p_first->p_rlnk = NULL;
+X    p_first->p_rlnk = ((void *) 0);
+N  }
+N  else {
+N    p_first->p_lnk = NULL;
+X    p_first->p_lnk = ((void *) 0);
+N  }
+N  return (p_first);
+N}
+N
+N
+N/*--------------------------- rt_put_rdy_first ------------------------------*/
+N
+Nvoid rt_put_rdy_first (P_TCB p_task) {
+N  /* Put task identified with "p_task" at the head of the ready list. The   */
+N  /* task must have at least a priority equal to highest priority in list.  */
+N  p_task->p_lnk = os_rdy.p_lnk;
+N  p_task->p_rlnk = NULL;
+X  p_task->p_rlnk = ((void *) 0);
+N  os_rdy.p_lnk = p_task;
+N}
+N
+N
+N/*--------------------------- rt_get_same_rdy_prio --------------------------*/
+N
+NP_TCB rt_get_same_rdy_prio (void) {
+N  /* Remove a task of same priority from ready list if any exists. Other-   */
+N  /* wise return NULL.                                                      */
+N  P_TCB p_first;
+N
+N  p_first = os_rdy.p_lnk;
+N  if (p_first->prio == os_tsk.run->prio) {
+N    os_rdy.p_lnk = os_rdy.p_lnk->p_lnk;
+N    return (p_first);
+N  }
+N  return (NULL);
+X  return (((void *) 0));
+N}
+N
+N
+N/*--------------------------- rt_resort_prio --------------------------------*/
+N
+Nvoid rt_resort_prio (P_TCB p_task) {
+N  /* Re-sort ordered lists after the priority of 'p_task' has changed.      */
+N  P_TCB p_CB;
+N
+N  if (p_task->p_rlnk == NULL) {
+X  if (p_task->p_rlnk == ((void *) 0)) {
+N    if (p_task->state == READY) {
+X    if (p_task->state == 1) {
+N      /* Task is chained into READY list. */
+N      p_CB = (P_TCB)&os_rdy;
+N      goto res;
+N    }
+N  }
+N  else {
+N    p_CB = p_task->p_rlnk;
+N    while (p_CB->cb_type == TCB) {
+X    while (p_CB->cb_type == 0) {
+N      /* Find a header of this task chain list. */
+N      p_CB = p_CB->p_rlnk;
+N    }
+Nres:rt_rmv_list (p_task);
+N    rt_put_prio ((P_XCB)p_CB, p_task);
+N  }
+N}
+N
+N
+N/*--------------------------- rt_put_dly ------------------------------------*/
+N
+Nvoid rt_put_dly (P_TCB p_task, U16 delay) {
+N  /* Put a task identified with "p_task" into chained delay wait list using */
+N  /* a delay value of "delay".                                              */
+N  P_TCB p;
+N  U32 delta,idelay = delay;
+N
+N  p = (P_TCB)&os_dly;
+N  if (p->p_dlnk == NULL) {
+X  if (p->p_dlnk == ((void *) 0)) {
+N    /* Delay list empty */
+N    delta = 0;
+N    goto last;
+N  }
+N  delta = os_dly.delta_time;
+N  while (delta < idelay) {
+N    if (p->p_dlnk == NULL) {
+X    if (p->p_dlnk == ((void *) 0)) {
+N      /* End of list found */
+Nlast: p_task->p_dlnk = NULL;
+Xlast: p_task->p_dlnk = ((void *) 0);
+N      p->p_dlnk = p_task;
+N      p_task->p_blnk = p;
+N      p->delta_time = (U16)(idelay - delta);
+N      p_task->delta_time = 0;
+N      return;
+N    }
+N    p = p->p_dlnk;
+N    delta += p->delta_time;
+N  }
+N  /* Right place found */
+N  p_task->p_dlnk = p->p_dlnk;
+N  p->p_dlnk = p_task;
+N  p_task->p_blnk = p;
+N  if (p_task->p_dlnk != NULL) {
+X  if (p_task->p_dlnk != ((void *) 0)) {
+N    p_task->p_dlnk->p_blnk = p_task;
+N  }
+N  p_task->delta_time = (U16)(delta - idelay);
+N  p->delta_time -= p_task->delta_time;
+N}
+N
+N
+N/*--------------------------- rt_dec_dly ------------------------------------*/
+N
+Nvoid rt_dec_dly (void) {
+N  /* Decrement delta time of list head: remove tasks having a value of zero.*/
+N  P_TCB p_rdy;
+N
+N  if (os_dly.p_dlnk == NULL) {
+X  if (os_dly.p_dlnk == ((void *) 0)) {
+N    return;
+N  }
+N  os_dly.delta_time--;
+N  while ((os_dly.delta_time == 0) && (os_dly.p_dlnk != NULL)) {
+X  while ((os_dly.delta_time == 0) && (os_dly.p_dlnk != ((void *) 0))) {
+N    p_rdy = os_dly.p_dlnk;
+N    if (p_rdy->p_rlnk != NULL) {
+X    if (p_rdy->p_rlnk != ((void *) 0)) {
+N      /* Task is really enqueued, remove task from semaphore/mailbox */
+N      /* timeout waiting list. */
+N      p_rdy->p_rlnk->p_lnk = p_rdy->p_lnk;
+N      if (p_rdy->p_lnk != NULL) {
+X      if (p_rdy->p_lnk != ((void *) 0)) {
+N        p_rdy->p_lnk->p_rlnk = p_rdy->p_rlnk;
+N        p_rdy->p_lnk = NULL;
+X        p_rdy->p_lnk = ((void *) 0);
+N      }
+N      p_rdy->p_rlnk = NULL;
+X      p_rdy->p_rlnk = ((void *) 0);
+N    }
+N    rt_put_prio (&os_rdy, p_rdy);
+N    os_dly.delta_time = p_rdy->delta_time;
+N    if (p_rdy->state == WAIT_ITV) {
+X    if (p_rdy->state == 4) {
+N      /* Calculate the next time for interval wait. */
+N      p_rdy->delta_time = p_rdy->interval_time + (U16)os_time;
+N    }
+N    p_rdy->state   = READY;
+X    p_rdy->state   = 1;
+N    p_rdy->ret_val = OS_R_TMO;
+X    p_rdy->ret_val = 0x01;
+N    os_dly.p_dlnk = p_rdy->p_dlnk;
+N    if (p_rdy->p_dlnk != NULL) {
+X    if (p_rdy->p_dlnk != ((void *) 0)) {
+N      p_rdy->p_dlnk->p_blnk =  (P_TCB)&os_dly;
+N      p_rdy->p_dlnk = NULL;
+X      p_rdy->p_dlnk = ((void *) 0);
+N    }
+N    p_rdy->p_blnk = NULL;
+X    p_rdy->p_blnk = ((void *) 0);
+N  }
+N}
+N
+N
+N/*--------------------------- rt_rmv_list -----------------------------------*/
+N
+Nvoid rt_rmv_list (P_TCB p_task) {
+N  /* Remove task identified with "p_task" from ready, semaphore or mailbox  */
+N  /* waiting list if enqueued.                                              */
+N  P_TCB p_b;
+N
+N  if (p_task->p_rlnk != NULL) {
+X  if (p_task->p_rlnk != ((void *) 0)) {
+N    /* A task is enqueued in semaphore / mailbox waiting list. */
+N    p_task->p_rlnk->p_lnk = p_task->p_lnk;
+N    if (p_task->p_lnk != NULL) {
+X    if (p_task->p_lnk != ((void *) 0)) {
+N      p_task->p_lnk->p_rlnk = p_task->p_rlnk;
+N    }
+N    return;
+N  }
+N
+N  p_b = (P_TCB)&os_rdy;
+N  while (p_b != NULL) {
+X  while (p_b != ((void *) 0)) {
+N    /* Search the ready list for task "p_task" */
+N    if (p_b->p_lnk == p_task) {
+N      p_b->p_lnk = p_task->p_lnk;
+N      return;
+N    }
+N    p_b = p_b->p_lnk;
+N  }
+N}
+N
+N
+N/*--------------------------- rt_rmv_dly ------------------------------------*/
+N
+Nvoid rt_rmv_dly (P_TCB p_task) {
+N  /* Remove task identified with "p_task" from delay list if enqueued.      */
+N  P_TCB p_b;
+N
+N  p_b = p_task->p_blnk;
+N  if (p_b != NULL) {
+X  if (p_b != ((void *) 0)) {
+N    /* Task is really enqueued */
+N    p_b->p_dlnk = p_task->p_dlnk;
+N    if (p_task->p_dlnk != NULL) {
+X    if (p_task->p_dlnk != ((void *) 0)) {
+N      /* 'p_task' is in the middle of list */
+N      p_b->delta_time += p_task->delta_time;
+N      p_task->p_dlnk->p_blnk = p_b;
+N      p_task->p_dlnk = NULL;
+X      p_task->p_dlnk = ((void *) 0);
+N    }
+N    else {
+N      /* 'p_task' is at the end of list */
+N      p_b->delta_time = 0;
+N    }
+N    p_task->p_blnk = NULL;
+X    p_task->p_blnk = ((void *) 0);
+N  }
+N}
+N
+N
+N/*--------------------------- rt_psq_enq ------------------------------------*/
+N
+Nvoid rt_psq_enq (OS_ID entry, U32 arg) {
+N  /* Insert post service request "entry" into ps-queue. */
+N  U32 idx;
+N
+N  idx = rt_inc_qi (os_psq->size, &os_psq->count, &os_psq->first);
+X  idx = rt_inc_qi (((P_PSQ)&os_fifo)->size, &((P_PSQ)&os_fifo)->count, &((P_PSQ)&os_fifo)->first);
+N  if (idx < os_psq->size) {
+X  if (idx < ((P_PSQ)&os_fifo)->size) {
+N    os_psq->q[idx].id  = entry;
+X    ((P_PSQ)&os_fifo)->q[idx].id  = entry;
+N    os_psq->q[idx].arg = arg;
+X    ((P_PSQ)&os_fifo)->q[idx].arg = arg;
+N  }
+N  else {
+N    os_error (OS_ERR_FIFO_OVF);
+X    os_error (2);
+N  }
+N}
+N
+N
+N/*----------------------------------------------------------------------------
+N * end of file
+N *---------------------------------------------------------------------------*/
+N

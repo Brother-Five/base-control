@@ -1,0 +1,20 @@
+﻿2016-02-20
+1. 加入bsp_led
+2. 加入bsp_can
+3. 加入bsp_dr16
+4. 加入bsp_hardtimer
+5. 加入bsp_exti
+6. 加入bsp_can
+7. 加入bsp_uatr_fifo
+
+2016-02-25
+1. 修改了bsp_can,不用参考RTX中间件的做法,使用FIFO来发送CAN数据,确保每个数据按顺序且不漏包地发送
+2. 修改bsp_uatr_fifo,修正了FIFO溢出死循环的问题
+
+
+2016-03-25
+1. 加入不用fifo发送的bsp_usart.c
+
+2016-04-02
+1.bsp_usart.c中添加u1_printf,速度比printf:u1_printf=7386:84(84为数据流转化)(速度约87倍)
+2.bsp_dr16.c添加接口DMA_StreamIT_TCIFx_DR16
